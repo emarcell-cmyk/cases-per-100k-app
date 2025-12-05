@@ -1,0 +1,12 @@
+{
+  "n_features": 4,
+  "feature_cols": [
+    "Percent With Prep Prescription",
+    "Percent Below Poverty Line",
+    "Percent Uninsured",
+    "Percent w/o HS Diploma"
+  ],
+  "scaler_path": "deploy_artifacts/scaler.pkl",
+  "feature_order_path": "deploy_artifacts/feature_order.json",
+  "training_stats_path": "deploy_artifacts/training_stats.json"
+}
