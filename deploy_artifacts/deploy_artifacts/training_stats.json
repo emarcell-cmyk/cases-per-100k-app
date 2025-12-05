@@ -1,0 +1,22 @@
+{
+  "Percent With Prep Prescription": {
+    "min": 5.9,
+    "max": 101.1,
+    "mean": 33.040338983050844
+  },
+  "Percent Below Poverty Line": {
+    "min": 2.1,
+    "max": 36.1,
+    "mean": 9.331525423728815
+  },
+  "Percent Uninsured": {
+    "min": 1.9,
+    "max": 29.7,
+    "mean": 8.964406779661017
+  },
+  "Percent w/o HS Diploma": {
+    "min": 2.0,
+    "max": 30.7,
+    "mean": 10.343050847457626
+  }
+}
