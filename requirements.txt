@@ -1,5 +1,5 @@
-streamlit>=1.24
-scikit-learn>=1.2
+streamlit
 pandas
 numpy
-matplotlib
+scikit-learn
+openai
