@@ -1,15 +1,8 @@
-# app.py — Streamlit app to serve your SVR model with AI Explanations
+# app.py — Streamlit app to serve your SVR model
 import streamlit as st
 import numpy as np
 import pandas as pd
 import pickle, json, os
-
-# Try to import OpenAI (handle case where it's not installed locally)
-try:
-    from openai import OpenAI
-    has_openai = True
-except ImportError:
-    has_openai = False
 
 # -------- Configuration --------
 ARTIFACTS_DIR = "deploy_artifacts"
@@ -22,8 +15,8 @@ st.set_page_config(page_title="Cases per 100k Predictor", layout="centered")
 st.title("Cases per 100,000 Predictor — Demo")
 
 st.markdown(
-    "Enter the county attributes below. "
-    "The app returns predicted **Cases per 100k** and uses AI to explain the socioeconomic context."
+    "Enter the county attributes (same features used for training). "
+    "The app returns predicted Cases per 100k and a simple local explanation."
 )
 
 # -------- Load artifacts --------
@@ -40,68 +33,22 @@ def load_artifacts():
     scaler = pickle.load(open(SCALER_PATH, "rb"))
     feature_order = json.load(open(FEATURE_ORDER_PATH, "r"))
     
-    # Load training stats if available, else default
+    # training stats optional
     training_stats = {}
     if os.path.exists(STATS_PATH):
         training_stats = json.load(open(STATS_PATH, "r"))
     else:
+        # default naive stats if file not present (0..1)
         training_stats = {f: {"min": 0.0, "max": 1.0, "mean": 0.5} for f in feature_order}
         
     return model, scaler, feature_order, training_stats
 
 model, scaler, feature_order, training_stats = load_artifacts()
 
-# -------- OpenAI Helper Function --------
-def get_ai_explanation(api_key, inputs, prediction):
-    if not has_openai:
-        return "OpenAI library not installed."
-        
-    client = OpenAI(api_key=api_key)
-    
-    # The PROMPT: Injecting context about Reverse Causality
-    system_prompt = """
-    You are an expert Public Health Analyst. You are analyzing a machine learning model predicting HIV cases per 100k people.
-    
-    CRITICAL CONTEXT FOR YOUR ANALYSIS:
-    1. The model often shows that HIGH "Percent With Prep Prescription" leads to HIGH "Cases". Explain that this is likely REVERSE CAUSALITY: PrEP resources are deployed most aggressively in areas that already have high epidemics.
-    2. Poverty and Lack of HS Diploma are standard risk factors.
-    3. Be concise (max 3-4 sentences).
-    4. Speak to the user like a policymaker.
-    """
-    
-    user_prompt = f"""
-    Analyze this specific county scenario:
-    INPUT DATA: {inputs}
-    
-    MODEL PREDICTION: {prediction:.2f} Cases per 100,000.
-    
-    Explain why these specific demographics might lead to this prediction based on socioeconomic factors.
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo", 
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.7
-    )
-    return response.choices[0].message.content
+st.sidebar.header("Input features")
+st.sidebar.markdown("Set feature values and press **Predict**")
 
-# -------- UI: Sidebar --------
-st.sidebar.header("Configuration")
-
-# 1. API Key Logic (Secrets -> Sidebar -> None)
-api_key = None
-if "OPENAI_API_KEY" in st.secrets:
-    api_key = st.secrets["OPENAI_API_KEY"]
-else:
-    api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password", help="Enter key to enable AI explanations.")
-
-st.sidebar.markdown("---")
-st.sidebar.header("Input Features")
-
-# 2. Build Inputs
+# Build inputs
 input_dict = {}
 for feat in feature_order:
     s = training_stats.get(feat, {"min": 0.0, "max": 1.0, "mean": 0.5})
@@ -109,68 +56,71 @@ for feat in feature_order:
     step = (hi - lo) / 100 if hi > lo else 0.01
     input_dict[feat] = st.sidebar.slider(feat, min_value=lo, max_value=hi, value=mu, step=step)
 
-# -------- Main Prediction Logic --------
 if st.sidebar.button("Predict"):
-    # A. Prepare Input
+    # 1. Prepare Input
+    # We must match the order: Features first, then target (as defined in training CSV)
     X_input = pd.DataFrame([input_dict], columns=feature_order)
     
-    # B. Add Dummy Target Column (Fix for Scaler Mismatch)
-    # Scaler expects 5 cols (features + target), so we add a dummy 0.0 for target
+    # 2. Add Dummy Target Column
+    # The scaler expects 5 columns because it was trained on features + target.
+    # We add "Cases/100,000" with a dummy value (0) to satisfy the scaler shape.
     X_input_for_scaling = X_input.copy()
     X_input_for_scaling["Cases/100,000"] = 0.0 
     
-    # C. Scale
+    # 3. Scale the Input
+    # This returns a numpy array with 5 columns
     X_scaled_full = scaler.transform(X_input_for_scaling)
-    X_scaled_features = X_scaled_full[:, :-1] # Slice off the dummy target
     
-    # D. Predict (Result is Scaled 0-1)
+    # 4. Slice to keep only Features
+    # The model was trained on X (4 columns), so we slice off the last column (the dummy target)
+    X_scaled_features = X_scaled_full[:, :-1]
+    
+    # 5. Predict (Output is Scaled 0-1)
     pred_scaled = model.predict(X_scaled_features)[0]
     
-    # E. Inverse Transform Prediction (Get back to Real Cases)
+    # 6. Inverse Transform Prediction
+    # The prediction is in 0-1 range. We use the scaler to reverse this to get real cases.
+    # We create a dummy row of 5 zeros, place our prediction in the last slot (target slot), and inverse transform.
     dummy_inverse_row = np.zeros((1, 5)) 
     dummy_inverse_row[0, -1] = pred_scaled
+    
     pred_real = scaler.inverse_transform(dummy_inverse_row)[0, -1]
 
     st.markdown("## Prediction")
     st.metric("Predicted Cases per 100,000", f"{pred_real:.2f}")
 
-    # -------- AI Explanation Section --------
-    st.markdown("---")
-    st.subheader("🤖 AI Analysis")
-    
-    if api_key:
-        with st.spinner("Consulting the AI Analyst..."):
-            try:
-                explanation = get_ai_explanation(api_key, input_dict, pred_real)
-                st.info(explanation)
-            except Exception as e:
-                st.error(f"AI Error: {e}")
-    else:
-        st.warning("To get an AI explanation, please add your OpenAI API Key in the sidebar or app secrets.")
-
-    # -------- Local Explanation (Data Table) --------
-    st.markdown("### Feature Impacts (Math)")
+    # -------- Local Explanation (Mean Replacement) --------
+    st.markdown("### Local feature impacts")
     contributions = []
+    
+    # Base prediction (real scale)
     base_pred = pred_real
     
-    # Calculate impact of each feature by comparing to "Average"
     for feat in feature_order:
+        # Create copy of input
         X_repl = X_input.copy()
+        
+        # Replace current feature with its training mean
         mean_val = training_stats.get(feat, {}).get("mean", 0.5)
         X_repl.loc[0, feat] = mean_val
         
-        # Scale with dummy target
+        # Add dummy target again for scaling
         X_repl_for_scaling = X_repl.copy()
         X_repl_for_scaling["Cases/100,000"] = 0.0
+        
+        # Scale
         X_repl_scaled_full = scaler.transform(X_repl_for_scaling)
         X_repl_features = X_repl_scaled_full[:, :-1]
         
-        # Predict & Inverse Transform
+        # Predict (Scaled)
         pred_repl_scaled = model.predict(X_repl_features)[0]
+        
+        # Inverse Transform (to get real units)
         dummy_inv_repl = np.zeros((1, 5))
         dummy_inv_repl[0, -1] = pred_repl_scaled
         pred_repl_real = scaler.inverse_transform(dummy_inv_repl)[0, -1]
         
+        # Calculate Delta
         delta = base_pred - pred_repl_real
         contributions.append((feat, delta))
 
@@ -178,4 +128,13 @@ if st.sidebar.button("Predict"):
     contrib_df = pd.DataFrame(contributions, columns=["feature", "impact_on_cases"]).head(10)
     
     st.dataframe(contrib_df.style.format({"impact_on_cases": "{:.2f}"}))
-    st.caption("Positive `impact` means this feature value is increasing the predicted case count compared to the average county.")
+    st.markdown("**Interpretation:** `impact_on_cases` shows how much the prediction changes (in actual cases) compared to if that feature was just 'average'.")
+
+    if st.checkbox("Show debug data"):
+        st.write("Scaled Prediction (0-1):", pred_scaled)
+        st.write("Unscaled Prediction (Real):", pred_real)
+        st.write("Input Features:", X_input)
+
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.write("Model: SVR (RBF)")
